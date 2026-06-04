@@ -1,0 +1,37 @@
+name: Build and Deploy to Netlify
+
+on:
+  push:
+    branches:
+      - master # Adjust this if your primary branch name is 'main'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-node-version: 20 # Matches modern Next.js environments
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Next.js Static Site
+        run: npm run build
+        env:
+          # Disables Next.js telemetry data to speed up the process slightly
+          NEXT_TELEMETRY_DISABLED: 1 
+
+      - name: Deploy to Netlify
+        uses: netlify/actions/cli@master
+        with:
+          args: deploy --dir=.next --prod
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
