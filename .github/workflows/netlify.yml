@@ -1,9 +1,9 @@
-name: Build and Deploy to Netlify
+name: Build and Deploy React App to Netlify
 
 on:
   push:
     branches:
-      - master # Adjust this if your primary branch name is 'main'
+      - master # Triggers the deploy every time you push to master
 
 jobs:
   deploy:
@@ -16,22 +16,20 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-node-version: 20 # Matches modern Next.js environments
+          node-version: 20
           cache: 'npm'
 
       - name: Install Dependencies
         run: npm ci
 
-      - name: Build Next.js Static Site
+      - name: Build React Production Site
         run: npm run build
-        env:
-          # Disables Next.js telemetry data to speed up the process slightly
-          NEXT_TELEMETRY_DISABLED: 1 
 
       - name: Deploy to Netlify
         uses: netlify/actions/cli@master
         with:
-          args: deploy --dir=.next --prod
+          # CRA outputs everything to the 'build' folder
+          args: deploy --dir=build --prod
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
