@@ -1,907 +1,837 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import './App.css';
 
+// ─── Constants ────────────────────────────────────────────────────────────────
 const MONTHS = [
-  { name: 'January', val: 1 },
-  { name: 'February', val: 2 },
-  { name: 'March', val: 3 },
-  { name: 'April', val: 4 },
-  { name: 'May', val: 5 },
-  { name: 'June', val: 6 },
-  { name: 'July', val: 7 },
-  { name: 'August', val: 8 },
-  { name: 'September', val: 9 },
-  { name: 'October', val: 10 },
-  { name: 'November', val: 11 },
-  { name: 'December', val: 12 }
+  { name: 'January', val: 1 },  { name: 'February', val: 2 },
+  { name: 'March', val: 3 },    { name: 'April', val: 4 },
+  { name: 'May', val: 5 },      { name: 'June', val: 6 },
+  { name: 'July', val: 7 },     { name: 'August', val: 8 },
+  { name: 'September', val: 9 },{ name: 'October', val: 10 },
+  { name: 'November', val: 11 },{ name: 'December', val: 12 },
 ];
-
 const YEARS = Array.from({ length: 11 }, (_, i) => 2024 + i);
+const DAYS_OF_WEEK = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const QUICK_TOWNS = ['Gwalior','Bhind','Morena','Shivpuri','Datia','Guna'];
+const LS_KEY      = 'psm_gen_v2';        // settings key
+const rowsKey     = (y, m) => `psm_rows_${y}_${m}`;
 
-const DAYS_OF_WEEK = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+// ─── Pure helpers (no hooks) ──────────────────────────────────────────────────
+function recalc(row, rate) {
+  const r = rate ?? row.rate ?? 4;
+  const bikeAmt = (row.km || 0) * r;
+  const total   = (row.hqTa||0)+(row.hqDa||0)+(row.upTa||0)+(row.upDa||0)+bikeAmt+(row.hotel||0)+(row.bus||0);
+  return { ...row, rate: r, bikeAmt, total };
+}
 
-function App() {
-  // --- Info Block State ---
-  const [psmName, setPsmName] = useState('Akash Vishoriya');
-  const [empId, setEmpId] = useState('I3785');
-  const [joiningDate, setJoiningDate] = useState('25-04-2024');
-  const [hq, setHq] = useState('Gwalior');
-  const [mobile, setMobile] = useState('9074305446');
-  const [aseName, setAseName] = useState('');
-  const [ratePerKm, setRatePerKm] = useState(4);
-  
-  // --- Time Period State ---
-  const [month, setMonth] = useState(4); // April default
-  const [year, setYear] = useState(2026); // 2026 default
-  
-  // --- Data Grid State ---
-  const [rows, setRows] = useState([]);
-  const [bulkTown, setBulkTown] = useState('');
-  const [toast, setToast] = useState('');
+function buildRow(d, month, year, hq, rate) {
+  const dt       = new Date(year, month - 1, d);
+  const dayIndex = dt.getDay();
+  const dayName  = DAYS_OF_WEEK[dayIndex];
+  const isSun    = dayIndex === 0;
+  const dateStr  = `${String(d).padStart(2,'0')}/${String(month).padStart(2,'0')}/${year}`;
+  if (isSun) {
+    return { dayNum:d, dateStr, dayName, town:'', type:'Sunday',
+             hqTa:0, hqDa:0, upTa:0, upDa:0, km:0, rate, bikeAmt:0, hotel:0, bus:0, total:0 };
+  }
+  return { dayNum:d, dateStr, dayName, town:hq, type:'HQ',
+           hqTa:175, hqDa:175, upTa:0, upDa:0, km:0, rate, bikeAmt:0, hotel:0, bus:0, total:350 };
+}
 
-  // Helper to trigger floating toast message
-  const showToast = (msg) => {
-    setToast(msg);
-    setTimeout(() => setToast(''), 4000);
-  };
+function applyType(row, type, hq) {
+  if (type === 'HQ')       return { ...row, type, hqTa:175, hqDa:175, upTa:0, upDa:0, town: hq };
+  if (type === 'Upcountry') return { ...row, type, hqTa:0,   hqDa:0,   upTa:0, upDa:250 };
+  return { ...row, type, hqTa:0, hqDa:0, upTa:0, upDa:0, town:'', km:0, hotel:0, bus:0 };
+}
 
-  // Re-generate grid whenever month/year/hq/rate details change
-  useEffect(() => {
-    const daysInMonth = new Date(year, month, 0).getDate();
-    const newRows = [];
-    
-    for (let d = 1; d <= daysInMonth; d++) {
-      const currentDate = new Date(year, month - 1, d);
-      const dayIndex = currentDate.getDay();
-      const dayName = DAYS_OF_WEEK[dayIndex];
-      const isSunday = dayIndex === 0;
-      
-      const padDay = d.toString().padStart(2, '0');
-      const padMonth = month.toString().padStart(2, '0');
-      const dateStr = `${padDay}/${padMonth}/${year}`;
+function applyTownAndAutoType(row, town, hq) {
+  let nextRow = { ...row, town: town };
+  if (row.type === 'Sunday' || row.type === 'Leave' || row.type === 'Holiday') {
+    return nextRow;
+  }
+  const cleanedTown = (town || '').trim();
+  if (cleanedTown.toLowerCase() === hq.toLowerCase()) {
+    nextRow = applyType(nextRow, 'HQ', hq);
+  } else if (cleanedTown !== '') {
+    nextRow = applyType(nextRow, 'Upcountry', hq);
+  }
+  return nextRow;
+}
 
-      if (isSunday) {
-        newRows.push({
-          dayNum: d,
-          dateStr: dateStr,
-          dayName: dayName,
-          town: '',
-          type: 'Sunday',
-          hqTa: 0,
-          hqDa: 0,
-          upTa: 0,
-          upDa: 0,
-          km: 0,
-          rate: ratePerKm,
-          bikeAmt: 0,
-          hotel: 0,
-          bus: 0,
-          total: 0
-        });
-      } else {
-        newRows.push({
-          dayNum: d,
-          dateStr: dateStr,
-          dayName: dayName,
-          town: hq,
-          type: 'HQ',
-          hqTa: 175,
-          hqDa: 175,
-          upTa: 0,
-          upDa: 0,
-          km: 0,
-          rate: ratePerKm,
-          bikeAmt: 0,
-          hotel: 0,
-          bus: 0,
-          total: 350 // TA (175) + DA (175)
-        });
-      }
-    }
-    setRows(newRows);
-  }, [month, year, hq, ratePerKm]);
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; }
+  catch { return {}; }
+}
 
-  // Handle cell input edits
-  const handleCellChange = (index, field, value) => {
-    const updatedRows = [...rows];
-    const row = { ...updatedRows[index] };
+function loadOrBuildRows(month, year, hq, rate) {
+  const daysInMonth = new Date(year, month, 0).getDate();
+  try {
+    const raw   = localStorage.getItem(rowsKey(year, month));
+    const saved = raw ? JSON.parse(raw) : null;
+    if (saved && saved.length === daysInMonth) return saved;
+  } catch { /* fall through */ }
+  return Array.from({ length: daysInMonth }, (_, i) => buildRow(i + 1, month, year, hq, rate));
+}
 
-    if (field === 'type') {
-      row.type = value;
-      if (value === 'HQ') {
-        row.hqTa = 175;
-        row.hqDa = 175;
-        row.upTa = 0;
-        row.upDa = 0;
-        row.town = hq;
-      } else if (value === 'Upcountry') {
-        row.hqTa = 0;
-        row.hqDa = 0;
-        row.upTa = 0;
-        row.upDa = 250;
-      } else if (value === 'Sunday') {
-        row.hqTa = 0;
-        row.hqDa = 0;
-        row.upTa = 0;
-        row.upDa = 0;
-        row.town = '';
-        row.km = 0;
-        row.hotel = 0;
-        row.bus = 0;
-      } else if (value === 'Leave' || value === 'Holiday') {
-        row.hqTa = 0;
-        row.hqDa = 0;
-        row.upTa = 0;
-        row.upDa = 0;
-        row.town = '';
-        row.km = 0;
-        row.hotel = 0;
-        row.bus = 0;
-      }
-    } else {
-      // Numerical fields or Town
-      if (field === 'town') {
-        row.town = value;
-      } else {
-        const numVal = value === '' ? 0 : parseFloat(value);
-        row[field] = isNaN(numVal) ? 0 : numVal;
-      }
-    }
+// ─── App ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  // ── lazy-init all state from localStorage ───────────────────────────────────
+  const [psmName,     setPsmName]     = useState(() => loadSettings().psmName     || 'Akash Vishoriya');
+  const [empId,       setEmpId]       = useState(() => loadSettings().empId       || 'I3785');
+  const [joiningDate, setJoiningDate] = useState(() => loadSettings().joiningDate || '25-04-2024');
+  const [hq,          setHq]          = useState(() => loadSettings().hq          || 'Gwalior');
+  const [mobileNo,    setMobileNo]    = useState(() => loadSettings().mobileNo    || '9074305446');
+  const [aseName,     setAseName]     = useState(() => loadSettings().aseName     || '');
+  const [ratePerKm,   setRatePerKm]   = useState(() => loadSettings().ratePerKm   || 4);
+  const [month,       setMonth]       = useState(() => loadSettings().month       || new Date().getMonth() + 1);
+  const [year,        setYear]        = useState(() => loadSettings().year        || new Date().getFullYear());
 
-    // Recalculate derived cells for this row
-    row.bikeAmt = (row.km || 0) * (row.rate || 0);
-    row.total = (row.hqTa || 0) + (row.hqDa || 0) + (row.upTa || 0) + (row.upDa || 0) + (row.bikeAmt || 0) + (row.hotel || 0) + (row.bus || 0);
-
-    updatedRows[index] = row;
-    setRows(updatedRows);
-  };
-
-  // Bulk set town names
-  const applyBulkTown = () => {
-    if (!bulkTown.trim()) return;
-    const updatedRows = rows.map(r => {
-      if (r.type !== 'Sunday' && r.type !== 'Leave' && r.type !== 'Holiday') {
-        const bikeAmt = r.km * r.rate;
-        const total = r.hqTa + r.hqDa + r.upTa + r.upDa + bikeAmt + r.hotel + r.bus;
-        return { ...r, town: bulkTown.trim(), bikeAmt, total };
-      }
-      return r;
-    });
-    setRows(updatedRows);
-    showToast(`Updated town to "${bulkTown}" for all active days!`);
-  };
-
-  // Calculate live preview totals for the grid bottom
-  const getTotals = useCallback(() => {
-    return rows.reduce(
-      (acc, r) => {
-        acc.hqTa += r.hqTa || 0;
-        acc.hqDa += r.hqDa || 0;
-        acc.upTa += r.upTa || 0;
-        acc.upDa += r.upDa || 0;
-        acc.km += r.km || 0;
-        acc.bikeAmt += r.bikeAmt || 0;
-        acc.hotel += r.hotel || 0;
-        acc.bus += r.bus || 0;
-        acc.total += r.total || 0;
-        return acc;
-      },
-      { hqTa: 0, hqDa: 0, upTa: 0, upDa: 0, km: 0, bikeAmt: 0, hotel: 0, bus: 0, total: 0 }
+  const [rows,        setRows]        = useState(() => {
+    const s = loadSettings();
+    return loadOrBuildRows(
+      s.month    || new Date().getMonth() + 1,
+      s.year     || new Date().getFullYear(),
+      s.hq       || 'Gwalior',
+      s.ratePerKm|| 4
     );
-  }, [rows]);
+  });
 
-  const totals = getTotals();
-  const summaryTA = totals.hqTa + totals.bikeAmt + totals.upTa;
-  const summaryDA = totals.hqDa + totals.upDa;
-  const summaryOE = totals.hotel + totals.bus;
+  const [bulkTown,  setBulkTown]  = useState('');
+  const [toast,     setToast]     = useState(null);
+  const [panelOpen, setPanelOpen] = useState(() => !window.matchMedia('(max-width: 767px)').matches);
+  const [isMobile,  setIsMobile]  = useState(() =>  window.matchMedia('(max-width: 767px)').matches);
 
-  // --- Excel Generation Logic using exceljs ---
+  // range updater
+  const [rangeFrom,  setRangeFrom]  = useState(1);
+  const [rangeTo,    setRangeTo]    = useState(1);
+  const [rangeType,  setRangeType]  = useState('HQ');
+  const [rangeTown,  setRangeTown]  = useState('');
+  const [rangeKm,    setRangeKm]    = useState('');
+  const [rangeHotel, setRangeHotel] = useState('');
+  const [rangeBus,   setRangeBus]   = useState('');
+
+  // skip-first-render ref for month/year change effect
+  const isFirstRender = useRef(true);
+
+  useEffect(() => {
+    const mql = window.matchMedia('(max-width: 767px)');
+    const handler = (e) => setIsMobile(e.matches);
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, []);
+
+  // ── rebuild rows when month/year changes (skip initial mount) ────────────────
+  useEffect(() => {
+    if (isFirstRender.current) { isFirstRender.current = false; return; }
+    setRows(loadOrBuildRows(month, year, hq, ratePerKm));
+    setRangeFrom(1);
+    setRangeTo(1);
+  }, [month, year]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── auto-save rows ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!rows.length) return;
+    try { localStorage.setItem(rowsKey(year, month), JSON.stringify(rows)); } catch(e) {}
+  }, [rows, year, month]);
+
+  // ── auto-save settings ───────────────────────────────────────────────────────
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(
+        { psmName, empId, joiningDate, hq, mobileNo, aseName, ratePerKm, month, year }
+      ));
+    } catch(e) {}
+  }, [psmName, empId, joiningDate, hq, mobileNo, aseName, ratePerKm, month, year]);
+
+  // ── toast ────────────────────────────────────────────────────────────────────
+  const showToast = useCallback((msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  }, []);
+
+  // ── cell change ──────────────────────────────────────────────────────────────
+  const handleCellChange = useCallback((index, field, value) => {
+    setRows(prev => {
+      const next = [...prev];
+      let row = { ...next[index] };
+      if (field === 'type')   row = applyType(row, value, hq);
+      else if (field === 'town') row = applyTownAndAutoType(row, value, hq);
+      else { const n = parseFloat(value); row[field] = isNaN(n) ? 0 : n; }
+      next[index] = recalc(row, ratePerKm);
+      return next;
+    });
+  }, [hq, ratePerKm]);
+
+  // ── copy from previous day ────────────────────────────────────────────────────
+  const copyFromPrev = useCallback((index) => {
+    if (index === 0) return;
+    setRows(prev => {
+      const src = prev[index - 1];
+      if (!src || src.type === 'Sunday') return prev;
+      const next = [...prev];
+      let row = applyType({ ...next[index] }, src.type, hq);
+      row.town  = src.town;
+      row.km    = src.km;
+      row.hotel = src.hotel;
+      row.bus   = src.bus;
+      next[index] = recalc(row, ratePerKm);
+      return next;
+    });
+    showToast('Copied from previous day ✓');
+  }, [hq, ratePerKm, showToast]);
+
+  // ── quick town ────────────────────────────────────────────────────────────────
+  const setQuickTown = useCallback((index, town) => {
+    setRows(prev => {
+      const next = [...prev];
+      let row = applyTownAndAutoType(next[index], town, hq);
+      next[index] = recalc(row, ratePerKm);
+      return next;
+    });
+  }, [hq, ratePerKm]);
+
+  // ── bulk town ─────────────────────────────────────────────────────────────────
+  const applyBulkTown = useCallback(() => {
+    const t = bulkTown.trim();
+    if (!t) return;
+    setRows(prev => prev.map(r => {
+      if (r.type === 'Sunday' || r.type === 'Leave' || r.type === 'Holiday') return r;
+      let row = applyTownAndAutoType(r, t, hq);
+      return recalc(row, ratePerKm);
+    }));
+    showToast(`Town set to "${t}" for all working days ✓`);
+    setBulkTown('');
+  }, [bulkTown, hq, ratePerKm, showToast]);
+
+  // ── range updater ─────────────────────────────────────────────────────────────
+  const applyRange = useCallback(() => {
+    const from = Math.max(1, parseInt(rangeFrom) || 1);
+    const to   = Math.min(rows.length, parseInt(rangeTo) || 1);
+    if (from > to) { showToast('Invalid range!', 'error'); return; }
+    setRows(prev => prev.map(r => {
+      if (r.dayNum < from || r.dayNum > to || r.type === 'Sunday') return r;
+      let u = applyType(r, rangeType, hq);
+      const t = rangeTown.trim();
+      if (t) {
+        u = applyTownAndAutoType(u, t, hq);
+      }
+      if (rangeKm !== '')    u.km    = parseFloat(rangeKm)    || 0;
+      if (rangeHotel !== '') u.hotel = parseFloat(rangeHotel) || 0;
+      if (rangeBus !== '')   u.bus   = parseFloat(rangeBus)   || 0;
+      return recalc(u, ratePerKm);
+    }));
+    showToast(`Updated days ${from}–${to} ✓`);
+  }, [rangeFrom, rangeTo, rangeType, rangeTown, rangeKm, rangeHotel, rangeBus, hq, ratePerKm, rows.length, showToast]);
+
+  // ── totals ────────────────────────────────────────────────────────────────────
+  const totals = useMemo(() => rows.reduce(
+    (acc, r) => ({
+      hqTa:    acc.hqTa    + (r.hqTa    || 0),
+      hqDa:    acc.hqDa    + (r.hqDa    || 0),
+      upTa:    acc.upTa    + (r.upTa    || 0),
+      upDa:    acc.upDa    + (r.upDa    || 0),
+      km:      acc.km      + (r.km      || 0),
+      bikeAmt: acc.bikeAmt + (r.bikeAmt || 0),
+      hotel:   acc.hotel   + (r.hotel   || 0),
+      bus:     acc.bus     + (r.bus     || 0),
+      total:   acc.total   + (r.total   || 0),
+    }),
+    { hqTa:0, hqDa:0, upTa:0, upDa:0, km:0, bikeAmt:0, hotel:0, bus:0, total:0 }
+  ), [rows]);
+
+  const summaryTA  = totals.hqTa + totals.bikeAmt + totals.upTa;
+  const summaryDA  = totals.hqDa + totals.upDa;
+  const summaryOE  = totals.hotel + totals.bus;
+  const daysInMonth = new Date(year, month, 0).getDate();
+
+  // ── Excel export ──────────────────────────────────────────────────────────────
   const exportToExcel = async () => {
     try {
-      showToast('Generating Excel sheet...');
-      
-      const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet('Psm Exp Format', {
-        views: [{ showGridLines: true }]
-      });
+      showToast('Generating Excel file…');
+      const workbook  = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Psm Exp Format', { views: [{ showGridLines: true }] });
 
-      // --- 1. Column Widths ---
       worksheet.columns = [
-        { key: 'A', width: 5.66 },
-        { key: 'B', width: 14.55 },
-        { key: 'C', width: 13.0 },
-        { key: 'D', width: 13.0 },
-        { key: 'E', width: 16.66 },
-        { key: 'F', width: 10.33 },
-        { key: 'G', width: 13.0 },
-        { key: 'H', width: 13.0 },
-        { key: 'I', width: 13.0 },
-        { key: 'J', width: 13.0 },
-        { key: 'K', width: 13.0 },
-        { key: 'L', width: 13.0 },
-        { key: 'M', width: 11.66 },
-        { key: 'N', width: 17.33 },
-        { key: 'O', width: 16.33 }
+        {key:'A',width:5.66}, {key:'B',width:14.55}, {key:'C',width:13},
+        {key:'D',width:13},   {key:'E',width:16.66}, {key:'F',width:10.33},
+        {key:'G',width:13},   {key:'H',width:13},    {key:'I',width:13},
+        {key:'J',width:13},   {key:'K',width:13},    {key:'L',width:13},
+        {key:'M',width:11.66},{key:'N',width:17.33}, {key:'O',width:16.33},
       ];
+      [15.6,15.6,16.2,15.6,18,22.5].forEach((h,i) => { worksheet.getRow(i+1).height = h; });
 
-      // --- 2. Row Heights ---
-      worksheet.getRow(1).height = 15.6;
-      worksheet.getRow(2).height = 15.6;
-      worksheet.getRow(3).height = 16.2;
-      worksheet.getRow(4).height = 15.6;
-      worksheet.getRow(5).height = 18.0;
-      worksheet.getRow(6).height = 22.5;
+      const thin    = { top:{style:'thin',color:{argb:'FF808080'}}, left:{style:'thin',color:{argb:'FF808080'}},
+                        bottom:{style:'thin',color:{argb:'FF808080'}}, right:{style:'thin',color:{argb:'FF808080'}} };
+      const fillG   = { type:'pattern', pattern:'solid', fgColor:{argb:'FF404040'} };
+      const fillY   = { type:'pattern', pattern:'solid', fgColor:{argb:'FFFFFF00'} };
+      const fillGrn = { type:'pattern', pattern:'solid', fgColor:{argb:'FFC6EFCE'} };
+      const fWB12   = { name:'Calibri', size:12, bold:true, color:{argb:'FFFFFFFF'} };
+      const fWB11   = { name:'Calibri', size:11, bold:true, color:{argb:'FFFFFFFF'} };
+      const fBB11   = { name:'Calibri', size:11, bold:true, color:{argb:'FF000000'} };
+      const fBN11   = { name:'Calibri', size:11, bold:false,color:{argb:'FF000000'} };
+      const fGB11   = { name:'Calibri', size:11, bold:true, color:{argb:'FF276221'} };
+      const aC = { horizontal:'center', vertical:'middle' };
+      const aL = { horizontal:'left',   vertical:'middle' };
+      const aR = { horizontal:'right',  vertical:'middle' };
 
-      // --- 3. Style Palettes ---
-      const thinBorder = {
-        top: { style: 'thin', color: { argb: 'FF808080' } },
-        left: { style: 'thin', color: { argb: 'FF808080' } },
-        bottom: { style: 'thin', color: { argb: 'FF808080' } },
-        right: { style: 'thin', color: { argb: 'FF808080' } }
+      const sc = (cell, font, fill, border, align) => {
+        if (font)   cell.font      = font;
+        if (fill)   cell.fill      = fill;
+        if (border) cell.border    = border;
+        if (align)  cell.alignment = align;
       };
 
-      const fillDarkGrey = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FF404040' }
-      };
+      // ── Info rows 1–3
+      const mm = month.toString().padStart(2,'0');
+      const ld = new Date(year, month, 0).getDate();
+      const fmtLast  = `${ld.toString().padStart(2,'0')}-${mm}-${year}`;
+      const fmtFirst = `01/${mm}/${year}`;
+      const fmtLastS = `${ld.toString().padStart(2,'0')}/${mm}/${year}`;
 
-      const fillYellow = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFFFFF00' }
-      };
-
-      const fontWhiteBold12 = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
-      const fontWhiteBold11 = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
-      const fontBlackBold11 = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF000000' } };
-      const fontBlackNorm11 = { name: 'Calibri', size: 11, bold: false, color: { argb: 'FF000000' } };
-
-      const alignCenter = { horizontal: 'center', vertical: 'middle' };
-      const alignLeft = { horizontal: 'left', vertical: 'middle' };
-
-      // Helper to apply style to a cell safely
-      const styleCell = (cell, font, fill, border, alignment) => {
-        if (font) cell.font = font;
-        if (fill) cell.fill = fill;
-        if (border) cell.border = border;
-        if (alignment) cell.alignment = alignment;
-      };
-
-      // Helper to merge and style
-      const mergeAndStyleRange = (rangeStr, font, fill, alignment, border = thinBorder) => {
-        const [startCellName, endCellName] = rangeStr.split(':');
-        const startCell = worksheet.getCell(startCellName);
-        const endCell = worksheet.getCell(endCellName);
-        
-        const startRow = startCell.row;
-        const startCol = startCell.col;
-        const endRow = endCell.row;
-        const endCol = endCell.col;
-
-        for (let r = startRow; r <= endRow; r++) {
-          for (let c = startCol; c <= endCol; c++) {
-            const cell = worksheet.getCell(r, c);
-            styleCell(cell, font, fill, border, alignment);
-          }
-        }
-        worksheet.mergeCells(startRow, startCol, endRow, endCol);
-      };
-
-      // --- 4. Render Info Block (Rows 1-3) ---
-      // Build border wrapping box for outer frame
       for (let r = 1; r <= 3; r++) {
         for (let c = 1; c <= 15; c++) {
           const cell = worksheet.getCell(r, c);
-          styleCell(cell, fontWhiteBold12, fillDarkGrey, null, alignLeft);
+          sc(cell, fWB12, fillG, null, aL);
           cell.border = {
-            top: r === 1 ? { style: 'medium', color: { argb: 'FF000000' } } : { style: 'thin', color: { argb: 'FF808080' } },
-            bottom: r === 3 ? { style: 'medium', color: { argb: 'FF000000' } } : { style: 'thin', color: { argb: 'FF808080' } },
-            left: c === 1 ? { style: 'medium', color: { argb: 'FF000000' } } : { style: 'thin', color: { argb: 'FF808080' } },
-            right: c === 15 ? { style: 'medium', color: { argb: 'FF000000' } } : { style: 'thin', color: { argb: 'FF808080' } }
+            top:    r===1 ? {style:'medium',color:{argb:'FF000000'}} : {style:'thin',color:{argb:'FF808080'}},
+            bottom: r===3 ? {style:'medium',color:{argb:'FF000000'}} : {style:'thin',color:{argb:'FF808080'}},
+            left:   c===1 ? {style:'medium',color:{argb:'FF000000'}} : {style:'thin',color:{argb:'FF808080'}},
+            right:  c===15? {style:'medium',color:{argb:'FF000000'}} : {style:'thin',color:{argb:'FF808080'}},
           };
         }
       }
-
-      // Populate text values and merge
-      const lastDay = new Date(year, month, 0).getDate();
-      const padMonth = month.toString().padStart(2, '0');
-      const lastDateStr = `${lastDay.toString().padStart(2, '0')}-${padMonth}-${year}`;
-      const firstDateStr = `01/${padMonth}/${year}`;
-      const formattedLastDateStr = `${lastDay.toString().padStart(2, '0')}/${padMonth}/${year}`;
-
       worksheet.getCell('A1').value = `Name of PSM : ${psmName}`;
       worksheet.getCell('E1').value = `Date of Joining : ${joiningDate}`;
-      worksheet.getCell('M1').value = `Date : ${lastDateStr}`;
-      
+      worksheet.getCell('M1').value = `Date : ${fmtLast}`;
       worksheet.getCell('A2').value = `Emp ID : ${empId}`;
       worksheet.getCell('E2').value = `HQ : ${hq}`;
-
-      worksheet.getCell('A3').value = `Mobile No : ${mobile}`;
+      worksheet.getCell('A3').value = `Mobile No : ${mobileNo}`;
       worksheet.getCell('E3').value = `ASE Name : ${aseName}`;
-      worksheet.getCell('M3').value = `Expense from / to : ${firstDateStr} to ${formattedLastDateStr}`;
+      worksheet.getCell('M3').value = `Expense from / to : ${fmtFirst} to ${fmtLastS}`;
+      ['A1:D1','E1:I1','M1:O1','A2:D2','E2:I2','M2:O2','A3:D3','E3:I3','M3:O3']
+        .forEach(r => worksheet.mergeCells(r));
 
-      worksheet.mergeCells('A1:D1');
-      worksheet.mergeCells('E1:I1');
-      worksheet.mergeCells('M1:O1');
-
-      worksheet.mergeCells('A2:D2');
-      worksheet.mergeCells('E2:I2');
-      worksheet.mergeCells('M2:O2'); // empty but merged
-
-      worksheet.mergeCells('A3:D3');
-      worksheet.mergeCells('E3:I3');
-      worksheet.mergeCells('M3:O3');
-
-      // --- 5. Render Spacer Row 4 ---
-      // (row 4 remains blank, no styling needed)
-
-      // --- 6. Render Section Headers Row 5 ---
-      mergeAndStyleRange('F5:G5', fontBlackBold11, fillYellow, alignCenter);
+      // ── Row 5 section headers
+      const fillOrg = { type:'pattern', pattern:'solid', fgColor:{argb:'FFFFC000'} };
+      for (let c = 1; c <= 15; c++) {
+        const cell = worksheet.getCell(5, c);
+        let fill = null;
+        if (c >= 6 && c <= 7)   fill = fillY;
+        if (c >= 8 && c <= 14)  fill = fillOrg;
+        sc(cell, fBB11, fill, thin, aC);
+      }
       worksheet.getCell('F5').value = 'HQ : LOCAL WORKING';
-
-      mergeAndStyleRange('H5:N5', fontBlackBold11, fillYellow, alignCenter);
       worksheet.getCell('H5').value = 'UPCOUNTRY WORKING';
+      worksheet.mergeCells('F5:G5');
+      worksheet.mergeCells('H5:N5');
 
-      // --- 7. Render Column Headers Row 6 ---
-      const headers = [
-        'S. No', 'Date', 'Day', 'Town', 'HQ / Upcountry',
-        'TA', 'DA', 'TA', 'DA', 'Total KM', 'Rate / Km',
-        'Bike Amt', 'Hotel', 'Bus / Train Amount', 'Total'
-      ];
-      headers.forEach((h, idx) => {
-        const colLetter = String.fromCharCode(65 + idx);
-        const cell = worksheet.getCell(`${colLetter}6`);
-        worksheet.getRow(6).height = 22.5;
-        styleCell(cell, fontWhiteBold11, fillDarkGrey, thinBorder, alignCenter);
-        cell.value = h;
-      });
+      // ── Row 6 column headers
+      ['S. No','Date','Day','Town','HQ / Upcountry','TA','DA','TA','DA',
+       'Total KM','Rate / Km','Bike Amt','Hotel','Bus / Train Amount','Total']
+        .forEach((h, i) => { const c = worksheet.getCell(6, i+1); sc(c, fWB11, fillG, thin, aC); c.value = h; });
 
-      // --- 8. Render Data Rows (starting from Row 7) ---
+      // ── Data rows
       const DATA_START = 7;
       rows.forEach((r, idx) => {
-        const excelRow = DATA_START + idx;
-        worksheet.getRow(excelRow).height = 18.0;
-        
-        const isSunday = r.type === 'Sunday';
-        
-        // Write cells
-        worksheet.getCell(`A${excelRow}`).value = r.dayNum;
-        
-        // Date Cell (date object for sorting, with formatting)
-        const dateCell = worksheet.getCell(`B${excelRow}`);
-        const [dayVal, monthVal, yearVal] = r.dateStr.split('/');
-        dateCell.value = new Date(Date.UTC(parseInt(yearVal), parseInt(monthVal) - 1, parseInt(dayVal)));
-        dateCell.numFmt = 'dd/mm/yyyy';
+        const er   = DATA_START + idx;
+        const isSun = r.type === 'Sunday';
+        worksheet.getRow(er).height = 18;
 
-        worksheet.getCell(`C${excelRow}`).value = r.dayName;
-        worksheet.getCell(`D${excelRow}`).value = isSunday ? null : r.town;
-        worksheet.getCell(`E${excelRow}`).value = isSunday ? null : r.type;
-        
-        worksheet.getCell(`F${excelRow}`).value = isSunday ? null : r.hqTa;
-        worksheet.getCell(`G${excelRow}`).value = isSunday ? null : r.hqDa;
-        worksheet.getCell(`H${excelRow}`).value = isSunday ? null : r.upTa;
-        worksheet.getCell(`I${excelRow}`).value = isSunday ? null : r.upDa;
-        
-        worksheet.getCell(`J${excelRow}`).value = isSunday ? null : r.km;
-        worksheet.getCell(`K${excelRow}`).value = r.rate;
-        
-        // Bike Amt Formula
-        worksheet.getCell(`L${excelRow}`).value = { formula: `J${excelRow}*K${excelRow}` };
-        
-        worksheet.getCell(`M${excelRow}`).value = isSunday ? null : r.hotel;
-        worksheet.getCell(`N${excelRow}`).value = isSunday ? null : r.bus;
-        
-        // Total Formula
-        worksheet.getCell(`O${excelRow}`).value = { 
-          formula: `SUM(F${excelRow}:I${excelRow},L${excelRow},M${excelRow},N${excelRow})` 
-        };
+        worksheet.getCell(`A${er}`).value = r.dayNum;
+        const dc = worksheet.getCell(`B${er}`);
+        const [dv,mv,yv] = r.dateStr.split('/');
+        dc.value  = new Date(Date.UTC(+yv, +mv-1, +dv)); dc.numFmt = 'dd/mm/yyyy';
+        worksheet.getCell(`C${er}`).value = r.dayName;
+        worksheet.getCell(`D${er}`).value = isSun ? null : r.town;
+        worksheet.getCell(`E${er}`).value = isSun ? null : r.type;
+        worksheet.getCell(`F${er}`).value = isSun ? null : r.hqTa;
+        worksheet.getCell(`G${er}`).value = isSun ? null : r.hqDa;
+        worksheet.getCell(`H${er}`).value = isSun ? null : r.upTa;
+        worksheet.getCell(`I${er}`).value = isSun ? null : r.upDa;
+        worksheet.getCell(`J${er}`).value = isSun ? null : r.km;
+        worksheet.getCell(`K${er}`).value = r.rate;
+        worksheet.getCell(`L${er}`).value = { formula: `J${er}*K${er}` };
+        worksheet.getCell(`M${er}`).value = isSun ? null : r.hotel;
+        worksheet.getCell(`N${er}`).value = isSun ? null : r.bus;
+        worksheet.getCell(`O${er}`).value = { formula: `SUM(F${er}:I${er},L${er},M${er},N${er})` };
 
-        // Apply styles to all 15 columns in this row
         for (let col = 1; col <= 15; col++) {
-          const colLetter = String.fromCharCode(64 + col);
-          const cell = worksheet.getCell(`${colLetter}${excelRow}`);
-          
-          if (isSunday && col >= 2 && col <= 7) {
-            // Sunday row columns B to G are solid yellow bold
-            styleCell(cell, fontBlackBold11, fillYellow, thinBorder, alignCenter);
-          } else {
-            // Normal styling
-            styleCell(cell, fontBlackNorm11, null, thinBorder, alignCenter);
-          }
+          const cell = worksheet.getCell(er, col);
+          if (isSun && col >= 2 && col <= 7) sc(cell, fBB11, fillY, thin, aC);
+          else sc(cell, fBN11, null, thin, aC);
         }
       });
 
+      // ── Totals row
       const lastDataRow = DATA_START + rows.length - 1;
-
-      // --- 9. Render Blank Spacer Rows (3 blank rows gap) ---
-      const totalSpacerStart = lastDataRow + 1;
-      for (let r = totalSpacerStart; r < totalSpacerStart + 3; r++) {
-        worksheet.getRow(r).height = 15.6;
-        for (let col = 1; col <= 15; col++) {
-          const colLetter = String.fromCharCode(64 + col);
-          const cell = worksheet.getCell(`${colLetter}${r}`);
-          styleCell(cell, fontBlackNorm11, null, thinBorder, alignCenter);
-        }
-      }
-
-      // --- 10. Render Totals Row ---
-      const TOTAL_ROW = totalSpacerStart + 3;
-      worksheet.getRow(TOTAL_ROW).height = 20.0;
-      
-      const fillLightGreen = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFC6EFCE' }
-      };
-      const fontGreenBold11 = {
-        name: 'Calibri',
-        size: 11,
-        bold: true,
-        color: { argb: 'FF276221' }
-      };
-      const totalBorder = {
-        top: { style: 'thin', color: { argb: 'FF808080' } },
-        left: { style: 'thin', color: { argb: 'FF808080' } },
-        bottom: { style: 'double', color: { argb: 'FF276221' } },
-        right: { style: 'thin', color: { argb: 'FF808080' } }
-      };
-
-      // Fill and border all cells in Total row
-      for (let col = 1; col <= 15; col++) {
-        const colLetter = String.fromCharCode(64 + col);
-        const cell = worksheet.getCell(`${colLetter}${TOTAL_ROW}`);
-        styleCell(cell, fontGreenBold11, fillLightGreen, totalBorder, alignCenter);
-      }
-
-      // Write values / formulas
-      const labelCell = worksheet.getCell(`E${TOTAL_ROW}`);
-      labelCell.value = 'TOTAL';
-      labelCell.alignment = { horizontal: 'right', vertical: 'middle' };
-
-      worksheet.getCell(`F${TOTAL_ROW}`).value = { formula: `SUM(F7:F${lastDataRow})` };
-      worksheet.getCell(`G${TOTAL_ROW}`).value = { formula: `SUM(G7:G${lastDataRow})` };
-      worksheet.getCell(`H${TOTAL_ROW}`).value = { formula: `SUM(H7:H${lastDataRow})` };
-      worksheet.getCell(`I${TOTAL_ROW}`).value = { formula: `SUM(I7:I${lastDataRow})` };
-      worksheet.getCell(`L${TOTAL_ROW}`).value = { formula: `SUM(L7:L${lastDataRow})` };
-      worksheet.getCell(`M${TOTAL_ROW}`).value = { formula: `SUM(M7:M${lastDataRow})` };
-      worksheet.getCell(`N${TOTAL_ROW}`).value = { formula: `SUM(N7:N${lastDataRow})` };
-      worksheet.getCell(`O${TOTAL_ROW}`).value = { formula: `SUM(O7:O${lastDataRow})` };
-
-      // --- 11. Render Summary Rows (TA/DA/OE) ---
-      const SR1 = TOTAL_ROW + 1;
-      const SR2 = TOTAL_ROW + 2;
-      const SR3 = TOTAL_ROW + 3;
-
-      const summaryConfigs = [
-        { row: SR1, label: 'TA', formula: `SUM(F${TOTAL_ROW},L${TOTAL_ROW},H${TOTAL_ROW})` },
-        { row: SR2, label: 'DA', formula: `SUM(G${TOTAL_ROW},I${TOTAL_ROW})` },
-        { row: SR3, label: 'OE', formula: `SUM(M${TOTAL_ROW}:N${TOTAL_ROW})` }
-      ];
-
-      summaryConfigs.forEach(cfg => {
-        worksheet.getRow(cfg.row).height = 18.0;
-        
-        // H Column: Label
-        const cellH = worksheet.getCell(`H${cfg.row}`);
-        cellH.value = cfg.label;
-        styleCell(cellH, fontBlackBold11, fillYellow, thinBorder, alignCenter);
-
-        // I Column: Formula
-        const cellI = worksheet.getCell(`I${cfg.row}`);
-        cellI.value = { formula: cfg.formula };
-        styleCell(cellI, fontBlackBold11, fillYellow, thinBorder, alignCenter);
+      const TR = lastDataRow + 4;
+      worksheet.getRow(TR).height = 20;
+      const dblBorder = { top:{style:'thin',color:{argb:'FF808080'}}, left:{style:'thin',color:{argb:'FF808080'}},
+                          bottom:{style:'double',color:{argb:'FF276221'}}, right:{style:'thin',color:{argb:'FF808080'}} };
+      for (let c = 1; c <= 15; c++) sc(worksheet.getCell(TR, c), fGB11, fillGrn, dblBorder, aC);
+      worksheet.getCell(`E${TR}`).value = 'TOTAL'; worksheet.getCell(`E${TR}`).alignment = aR;
+      ['F','G','H','I','L','M','N','O'].forEach(c => {
+        worksheet.getCell(`${c}${TR}`).value = { formula: `SUM(${c}7:${c}${lastDataRow})` };
       });
 
-      // --- 12. Save File ---
+      // ── Summary rows
+      [[TR+1,'TA',`SUM(F${TR},L${TR},H${TR})`],
+       [TR+2,'DA',`SUM(G${TR},I${TR})`],
+       [TR+3,'OE',`SUM(M${TR}:N${TR})`]].forEach(([row, lbl, formula]) => {
+        worksheet.getRow(row).height = 18;
+        const h = worksheet.getCell(`H${row}`); h.value = lbl; sc(h, fBB11, fillY, thin, aC);
+        const i = worksheet.getCell(`I${row}`); i.value = { formula }; sc(i, fBB11, fillY, thin, aC);
+      });
+
       const monthName = MONTHS.find(m => m.val === month).name.toUpperCase();
-      const fileName = `PSM_EXPENSE_${monthName}_${year}_AKASH.xlsx`;
-
-      const buffer = await workbook.xlsx.writeBuffer();
-      const blob = new Blob([buffer], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      });
-      saveAs(blob, fileName);
-      
-      showToast(`Exported successfully: ${fileName}`);
+      const fileName  = `PSM_EXPENSE_${monthName}_${year}_AKASH.xlsx`;
+      const buffer    = await workbook.xlsx.writeBuffer();
+      saveAs(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), fileName);
+      showToast(`Downloaded ${fileName} ✓`);
     } catch (err) {
       console.error(err);
-      showToast('Error exporting Excel file!');
+      showToast('Export failed — check console.', 'error');
     }
   };
 
+  // ── JSX ───────────────────────────────────────────────────────────────────────
+  const monthName = MONTHS.find(m => m.val === month)?.name;
+
   return (
     <div className="app-container">
-      <div className="bg-grid"></div>
-      
-      {/* App Header */}
+      <div className="bg-grid" />
+
+      {/* HEADER */}
       <header className="app-header">
         <div className="brand-section">
-          <h1>PSM Expense Sheet Generator</h1>
-          <p>Create professional, pre-formatted travel expense journals for Akash Vishoriya</p>
+          <h1>📊 PSM Expense Generator</h1>
+          <p>Akash Vishoriya &middot; auto-saved locally</p>
         </div>
-        <div className="export-actions">
-          <button className="btn-primary" onClick={exportToExcel}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-            </svg>
-            Download Excel (.xlsx)
-          </button>
+        <div className="header-actions">
+          <button className="btn-icon" onClick={() => setPanelOpen(o => !o)} title="Toggle settings">⚙️</button>
+          <button className="btn-primary" onClick={exportToExcel}>⬇ Download Excel</button>
         </div>
       </header>
 
-      {/* Main Workspace */}
-      <main className="dashboard-workspace">
-        
-        {/* Left Side: Control Panel */}
-        <div className="control-panel">
-          
-          <div className="panel-section">
-            <h2>Select Month & Year</h2>
-            <div className="date-selector-grid">
+      {/* WORKSPACE */}
+      <div className={`dashboard-workspace${panelOpen ? '' : ' panel-hidden'}`}>
+
+        {/* CONTROL PANEL */}
+        {panelOpen && (
+          <aside className="control-panel">
+            <button className="control-panel-close-btn" onClick={() => setPanelOpen(false)}>
+              ✕ Close Settings
+            </button>
+            {/* Month / Year */}
+            <div className="panel-section">
+              <h2>📅 Month &amp; Year</h2>
+              <div className="two-col">
+                <div className="form-group">
+                  <label htmlFor="sel-month">Month</label>
+                  <select id="sel-month" className="form-control" value={month}
+                    onChange={e => setMonth(+e.target.value)}>
+                    {MONTHS.map(m => <option key={m.val} value={m.val}>{m.name}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="sel-year">Year</label>
+                  <select id="sel-year" className="form-control" value={year}
+                    onChange={e => setYear(+e.target.value)}>
+                    {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Employee info */}
+            <div className="panel-section">
+              <h2>👤 Employee Info</h2>
+              {[
+                ['psm-name','PSM Name',    psmName,     setPsmName,   'text'],
+                ['emp-id',  'Employee ID', empId,       setEmpId,     'text'],
+                ['join-dt', 'Joining Date',joiningDate, setJoiningDate,'text'],
+                ['hq-city', 'HQ City',    hq,          setHq,        'text'],
+                ['mob-no',  'Mobile',     mobileNo,    setMobileNo,  'tel'],
+                ['ase-nm',  'ASE Name',   aseName,     setAseName,   'text'],
+              ].map(([id, label, val, setter, type]) => (
+                <div className="form-group" key={id}>
+                  <label htmlFor={id}>{label}</label>
+                  <input id={id} className="form-control" type={type} value={val}
+                    onChange={e => setter(e.target.value)} />
+                </div>
+              ))}
               <div className="form-group">
-                <label htmlFor="select-month">Month</label>
-                <select 
-                  id="select-month" 
-                  className="form-control" 
-                  value={month} 
-                  onChange={(e) => setMonth(parseInt(e.target.value))}
-                >
-                  {MONTHS.map(m => <option key={m.val} value={m.val}>{m.name}</option>)}
+                <label htmlFor="rate-km">Bike Rate (₹/KM)</label>
+                <input id="rate-km" className="form-control" type="number" value={ratePerKm}
+                  onChange={e => setRatePerKm(parseFloat(e.target.value) || 0)} />
+              </div>
+            </div>
+
+            {/* Bulk town */}
+            <div className="panel-section">
+              <h2>🏙️ Bulk Town Fill</h2>
+              <p className="hint-text">Set one town for all working days</p>
+              <div className="quick-badges">
+                {QUICK_TOWNS.map(t => (
+                  <button key={t} className={`badge-btn${bulkTown===t?' active':''}`}
+                    onClick={() => setBulkTown(t)}>{t}</button>
+                ))}
+              </div>
+              <div className="row-inline" style={{marginTop:'0.5rem'}}>
+                <input className="form-control" type="text" placeholder="Or type a town…"
+                  value={bulkTown} onChange={e => setBulkTown(e.target.value)} />
+                <button className="btn-secondary" onClick={applyBulkTown}>Apply All</button>
+              </div>
+            </div>
+
+            {/* Range updater */}
+            <div className="panel-section">
+              <h2>📆 Range Updater</h2>
+              <p className="hint-text">Update multiple days in one go</p>
+              <div className="two-col">
+                <div className="form-group">
+                  <label>From Day</label>
+                  <select className="form-control" value={rangeFrom}
+                    onChange={e => setRangeFrom(+e.target.value)}>
+                    {Array.from({length:daysInMonth},(_,i)=>i+1).map(d=>(
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>To Day</label>
+                  <select className="form-control" value={rangeTo}
+                    onChange={e => setRangeTo(+e.target.value)}>
+                    {Array.from({length:daysInMonth},(_,i)=>i+1).map(d=>(
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="form-group">
+                <label>Type</label>
+                <select className="form-control" value={rangeType}
+                  onChange={e => setRangeType(e.target.value)}>
+                  <option value="HQ">HQ</option>
+                  <option value="Upcountry">Upcountry</option>
+                  <option value="Leave">Leave</option>
+                  <option value="Holiday">Holiday</option>
                 </select>
               </div>
               <div className="form-group">
-                <label htmlFor="select-year">Year</label>
-                <select 
-                  id="select-year" 
-                  className="form-control" 
-                  value={year} 
-                  onChange={(e) => setYear(parseInt(e.target.value))}
-                >
-                  {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
-                </select>
+                <label>Town (blank = keep existing)</label>
+                <div className="quick-badges">
+                  {QUICK_TOWNS.slice(0,4).map(t=>(
+                    <button key={t} className={`badge-btn sm${rangeTown===t?' active':''}`}
+                      onClick={()=>setRangeTown(t)}>{t}</button>
+                  ))}
+                </div>
+                <input className="form-control" type="text" placeholder="Town name…"
+                  value={rangeTown} onChange={e => setRangeTown(e.target.value)} />
               </div>
-            </div>
-          </div>
-
-          <div className="panel-section">
-            <h2>Employee Information</h2>
-            <div className="form-group">
-              <label htmlFor="psm-name">PSM Name</label>
-              <input 
-                id="psm-name" 
-                className="form-control" 
-                type="text" 
-                value={psmName} 
-                onChange={(e) => setPsmName(e.target.value)} 
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="emp-id">Employee ID</label>
-              <input 
-                id="emp-id" 
-                className="form-control" 
-                type="text" 
-                value={empId} 
-                onChange={(e) => setEmpId(e.target.value)} 
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="joining-date">Joining Date</label>
-              <input 
-                id="joining-date" 
-                className="form-control" 
-                type="text" 
-                value={joiningDate} 
-                onChange={(e) => setJoiningDate(e.target.value)} 
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="hq-town">Headquarters (HQ)</label>
-              <input 
-                id="hq-town" 
-                className="form-control" 
-                type="text" 
-                value={hq} 
-                onChange={(e) => setHq(e.target.value)} 
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="mobile-no">Mobile Number</label>
-              <input 
-                id="mobile-no" 
-                className="form-control" 
-                type="text" 
-                value={mobile} 
-                onChange={(e) => setMobile(e.target.value)} 
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="ase-name">ASE Name</label>
-              <input 
-                id="ase-name" 
-                className="form-control" 
-                type="text" 
-                value={aseName} 
-                placeholder="N/A"
-                onChange={(e) => setAseName(e.target.value)} 
-              />
-            </div>
-          </div>
-
-          <div className="panel-section">
-            <h2>Defaults & Bulk Actions</h2>
-            <div className="form-group">
-              <label htmlFor="rate-per-km">Bike Rate (Per KM)</label>
-              <input 
-                id="rate-per-km" 
-                className="form-control" 
-                type="number" 
-                value={ratePerKm} 
-                onChange={(e) => setRatePerKm(parseFloat(e.target.value) || 0)} 
-              />
-            </div>
-            <div className="form-group" style={{ marginTop: '0.5rem' }}>
-              <label htmlFor="bulk-town">Bulk Fill Town Name</label>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <input 
-                  id="bulk-town" 
-                  className="form-control" 
-                  type="text" 
-                  placeholder="e.g. Morena" 
-                  value={bulkTown} 
-                  onChange={(e) => setBulkTown(e.target.value)}
-                  style={{ flex: 1 }}
-                />
-                <button className="btn-secondary" style={{ padding: '0 1rem' }} onClick={applyBulkTown}>
-                  Apply
-                </button>
+              <div className="two-col">
+                <div className="form-group">
+                  <label>KM</label>
+                  <input className="form-control" type="number" placeholder="blank = keep"
+                    value={rangeKm} onChange={e => setRangeKm(e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Hotel ₹</label>
+                  <input className="form-control" type="number" placeholder="blank = keep"
+                    value={rangeHotel} onChange={e => setRangeHotel(e.target.value)} />
+                </div>
               </div>
+              <div className="form-group">
+                <label>Bus/Train ₹</label>
+                <input className="form-control" type="number" placeholder="blank = keep"
+                  value={rangeBus} onChange={e => setRangeBus(e.target.value)} />
+              </div>
+              <button className="btn-primary full-width" onClick={applyRange}>
+                ✅ Apply to Range
+              </button>
             </div>
-          </div>
 
-        </div>
+            {/* Summary */}
+            <div className="summary-mini">
+              <div className="sum-item"><span>TA</span><strong>₹{summaryTA}</strong></div>
+              <div className="sum-item"><span>DA</span><strong>₹{summaryDA}</strong></div>
+              <div className="sum-item"><span>OE</span><strong>₹{summaryOE}</strong></div>
+              <div className="sum-item total"><span>Grand Total</span><strong>₹{totals.total}</strong></div>
+            </div>
+          </aside>
+        )}
 
-        {/* Right Side: Spreadsheet Preview */}
+        {/* CONTENT */}
         <div className="preview-card">
           <div className="preview-header">
-            <h2>Interactive Grid Preview</h2>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-              Values edited here are included in the downloaded Excel file.
-            </span>
+            <h2>
+              {monthName} {year}
+              <span className="day-count-badge">{daysInMonth} days</span>
+            </h2>
+            {!panelOpen && (
+              <div className="summary-inline">
+                <span>TA <strong>₹{summaryTA}</strong></span>
+                <span>DA <strong>₹{summaryDA}</strong></span>
+                <span>Total <strong>₹{totals.total}</strong></span>
+              </div>
+            )}
           </div>
 
-          {/* Simulated Excel Grid */}
-          <div className="excel-view-container">
-            <table className="excel-mock-table">
-              
-              {/* Header Blocks (Rows 1-3 Info Cards) */}
-              <thead className="excel-mock-header-block">
-                <tr className="excel-info-row">
-                  <td colSpan="4" className="info-label">Name of PSM : {psmName}</td>
-                  <td colSpan="5">Date of Joining : {joiningDate}</td>
-                  <td colSpan="3"></td>
-                  <td colSpan="3">Date : {new Date(year, month, 0).getDate().toString().padStart(2, '0')}-{month.toString().padStart(2, '0')}-{year}</td>
-                </tr>
-                <tr className="excel-info-row">
-                  <td colSpan="4" className="info-label">Emp ID : {empId}</td>
-                  <td colSpan="5">HQ : {hq}</td>
-                  <td colSpan="6"></td>
-                </tr>
-                <tr className="excel-info-row">
-                  <td colSpan="4" className="info-label">Mobile No : {mobile}</td>
-                  <td colSpan="5">ASE Name : {aseName || 'N/A'}</td>
-                  <td colSpan="3"></td>
-                  <td colSpan="3">
-                    Expense from/to: 01/{month.toString().padStart(2, '0')}/{year} to {new Date(year, month, 0).getDate().toString().padStart(2, '0')}/{month.toString().padStart(2, '0')}/{year}
-                  </td>
-                </tr>
-                
-                {/* Row 4 Spacer */}
-                <tr style={{ height: '15.6px' }}><td colSpan="15" style={{ border: 'none', background: 'transparent' }}></td></tr>
-                
-                {/* Row 5 Sections */}
-                <tr className="excel-section-header">
-                  <td colSpan="5" style={{ background: 'transparent', border: 'none' }}></td>
-                  <td colSpan="2">HQ : LOCAL WORKING</td>
-                  <td colSpan="7">UPCOUNTRY WORKING</td>
-                  <td style={{ background: 'transparent', border: 'none' }}></td>
-                </tr>
-
-                {/* Row 6 Headers */}
-                <tr className="excel-column-header">
-                  <th>S. No</th>
-                  <th>Date</th>
-                  <th>Day</th>
-                  <th>Town</th>
-                  <th>HQ / Upcountry</th>
-                  <th>TA</th>
-                  <th>DA</th>
-                  <th>TA</th>
-                  <th>DA</th>
-                  <th>Total KM</th>
-                  <th>Rate/Km</th>
-                  <th>Bike Amt</th>
-                  <th>Hotel</th>
-                  <th>Bus / Train</th>
-                  <th>Total</th>
-                </tr>
-              </thead>
-
-              {/* Data Grid Rows */}
-              <tbody>
-                {rows.map((r, index) => {
-                  const isSunday = r.type === 'Sunday';
-                  const isLeave = r.type === 'Leave';
-                  const isHoliday = r.type === 'Holiday';
-                  
-                  let rowClass = 'row-normal';
-                  if (isSunday) rowClass = 'row-sunday';
-                  else if (isLeave) rowClass = 'row-leave';
-                  else if (isHoliday) rowClass = 'row-holiday';
-
-                  return (
-                    <tr key={index} className={rowClass}>
-                      {/* S.No */}
-                      <td>{r.dayNum}</td>
-                      
-                      {/* Date */}
-                      <td style={{ minWidth: '100px' }}>{r.dateStr}</td>
-                      
-                      {/* Day Name */}
-                      <td>{r.dayName}</td>
-                      
-                      {/* Town */}
-                      <td>
-                        <input
-                          className="cell-input"
-                          type="text"
-                          value={r.town}
-                          disabled={isSunday || isLeave || isHoliday}
-                          onChange={(e) => handleCellChange(index, 'town', e.target.value)}
-                        />
-                      </td>
-
-                      {/* Travel Type */}
-                      <td>
-                        <select
-                          className="cell-select"
-                          value={r.type}
-                          onChange={(e) => handleCellChange(index, 'type', e.target.value)}
-                        >
-                          <option value="HQ">HQ</option>
-                          <option value="Upcountry">Upcountry</option>
-                          <option value="Leave">Leave</option>
-                          <option value="Holiday">Holiday</option>
-                          <option value="Sunday">Sunday</option>
-                        </select>
-                      </td>
-
-                      {/* HQ TA */}
-                      <td className="readonly-cell">{isSunday ? '' : r.hqTa}</td>
-                      
-                      {/* HQ DA */}
-                      <td className="readonly-cell">{isSunday ? '' : r.hqDa}</td>
-                      
-                      {/* UP TA */}
-                      <td>
-                        <input
-                          className="cell-input"
-                          type="number"
-                          value={isSunday ? '' : r.upTa}
-                          disabled={isSunday || isLeave || isHoliday || r.type === 'HQ'}
-                          onChange={(e) => handleCellChange(index, 'upTa', e.target.value)}
-                        />
-                      </td>
-
-                      {/* UP DA */}
-                      <td className="readonly-cell">{isSunday ? '' : r.upDa}</td>
-
-                      {/* KM Travelled */}
-                      <td>
-                        <input
-                          className="cell-input"
-                          type="number"
-                          value={isSunday ? '' : r.km}
-                          disabled={isSunday || isLeave || isHoliday}
-                          onChange={(e) => handleCellChange(index, 'km', e.target.value)}
-                        />
-                      </td>
-
-                      {/* Rate */}
-                      <td className="readonly-cell">{r.rate}</td>
-
-                      {/* Bike Amt */}
-                      <td className="formula-cell">{isSunday ? '0' : r.bikeAmt}</td>
-
-                      {/* Hotel */}
-                      <td>
-                        <input
-                          className="cell-input"
-                          type="number"
-                          value={isSunday ? '' : r.hotel}
-                          disabled={isSunday || isLeave || isHoliday}
-                          onChange={(e) => handleCellChange(index, 'hotel', e.target.value)}
-                        />
-                      </td>
-
-                      {/* Bus / Train */}
-                      <td>
-                        <input
-                          className="cell-input"
-                          type="number"
-                          value={isSunday ? '' : r.bus}
-                          disabled={isSunday || isLeave || isHoliday}
-                          onChange={(e) => handleCellChange(index, 'bus', e.target.value)}
-                        />
-                      </td>
-
-                      {/* Total */}
-                      <td className="formula-cell">{r.total}</td>
-                    </tr>
-                  );
-                })}
-
-                {/* 3 Spacer Rows Gap in Preview */}
-                <tr style={{ height: '18px' }}><td colSpan="15" style={{ background: 'rgba(255,255,255,0.01)', borderLeft: 'none', borderRight: 'none' }}></td></tr>
-                <tr style={{ height: '18px' }}><td colSpan="15" style={{ background: 'rgba(255,255,255,0.01)', borderLeft: 'none', borderRight: 'none' }}></td></tr>
-                <tr style={{ height: '18px' }}><td colSpan="15" style={{ background: 'rgba(255,255,255,0.01)', borderLeft: 'none', borderRight: 'none' }}></td></tr>
-
-                {/* Totals Row */}
-                <tr className="row-total-bottom">
-                  <td colSpan="5" style={{ textAlign: 'right', paddingRight: '1rem' }}>TOTAL</td>
-                  <td>{totals.hqTa}</td>
-                  <td>{totals.hqDa}</td>
-                  <td>{totals.upTa}</td>
-                  <td>{totals.upDa}</td>
-                  <td>{totals.km}</td>
-                  <td></td>
-                  <td>{totals.bikeAmt}</td>
-                  <td>{totals.hotel}</td>
-                  <td>{totals.bus}</td>
-                  <td>{totals.total}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          {/* Summary badging */}
-          <div className="summary-container">
-            <div className="summary-card">
-              <span className="summary-label">TA</span>
-              <span className="summary-value">₹ {summaryTA}</span>
-            </div>
-            <div className="summary-card">
-              <span className="summary-label">DA</span>
-              <span className="summary-value">₹ {summaryDA}</span>
-            </div>
-            <div className="summary-card">
-              <span className="summary-label">OE</span>
-              <span className="summary-value">₹ {summaryOE}</span>
-            </div>
-          </div>
-
+          {isMobile
+            ? <MobileCards rows={rows} hq={hq} onChange={handleCellChange}
+                onCopy={copyFromPrev} onQuickTown={setQuickTown} />
+            : <DesktopTable rows={rows} hq={hq} totals={totals} onChange={handleCellChange}
+                onCopy={copyFromPrev} onQuickTown={setQuickTown} />
+          }
         </div>
-      </main>
+      </div>
 
-      {/* Footer */}
-      <footer className="app-footer">
-        PSM Expense Sheet Generator App &bull; Powered by React and ExcelJS
-      </footer>
-
-      {/* Floating Status Toast */}
+      {/* TOAST */}
       {toast && (
-        <div className="toast-msg">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ marginRight: '4px' }}>
-            <polyline points="20 6 9 17 4 12"></polyline>
-          </svg>
-          {toast}
+        <div className={`toast-msg${toast.type === 'error' ? ' toast-error' : ''}`}>
+          {toast.msg}
         </div>
       )}
     </div>
   );
 }
 
-export default App;
+// ─── Mobile Cards ─────────────────────────────────────────────────────────────
+function MobileCards({ rows, hq, onChange, onCopy, onQuickTown }) {
+  return (
+    <div className="mobile-cards">
+      {rows.map((r, i) => {
+        const isSun   = r.type === 'Sunday';
+        const isOff   = r.type === 'Leave' || r.type === 'Holiday';
+        return (
+          <div key={r.dayNum} className={`day-card${isSun?' sunday-card':isOff?' leave-card':''}`}>
+            {/* Card header */}
+            <div className="card-header">
+              <div className="card-date-block">
+                <span className="card-daynum">{r.dayNum}</span>
+                <div>
+                  <div className="card-dayname">{r.dayName}</div>
+                  <div className="card-datestr">{r.dateStr}</div>
+                </div>
+              </div>
+              <div className="card-header-right">
+                {isSun
+                  ? <span className="sunday-badge">🌟 Sunday</span>
+                  : <>
+                      <button className="copy-btn" onClick={() => onCopy(i)} disabled={i === 0}
+                        title="Copy from yesterday">⬆ Copy</button>
+                      <span className={`total-badge${r.total > 0 ? ' has-total' : ''}`}>₹{r.total}</span>
+                    </>
+                }
+              </div>
+            </div>
+
+            {/* Card body — skip for Sundays */}
+            {!isSun && (
+              <div className="card-body">
+                {/* Type pills */}
+                <div className="card-field">
+                  <label>Type</label>
+                  <div className="type-pills">
+                    {['HQ','Upcountry','Leave','Holiday'].map(t => (
+                      <button key={t}
+                        className={`type-pill${r.type===t?' active-'+t.toLowerCase():''}`}
+                        onClick={() => onChange(i, 'type', t)}>{t}</button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Town */}
+                {!isOff && (
+                  <div className="card-field">
+                    <label>Town</label>
+                    <input className="card-input" type="text" value={r.town}
+                      onChange={e => onChange(i, 'town', e.target.value)} />
+                    <div className="quick-badges compact">
+                      {QUICK_TOWNS.map(t => (
+                        <button key={t} className={`badge-btn sm${r.town===t?' active':''}`}
+                          onClick={() => onQuickTown(i, t)}>{t}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Numbers */}
+                {!isOff && (
+                  <div className="card-fields-grid">
+                    <div className="card-field">
+                      <label>KM</label>
+                      <input className="card-input num" type="number" inputMode="decimal"
+                        value={r.km || ''} placeholder="0"
+                        onChange={e => onChange(i, 'km', e.target.value)} />
+                    </div>
+                    <div className="card-field">
+                      <label>Hotel ₹</label>
+                      <input className="card-input num" type="number" inputMode="decimal"
+                        value={r.hotel || ''} placeholder="0"
+                        onChange={e => onChange(i, 'hotel', e.target.value)} />
+                    </div>
+                    <div className="card-field">
+                      <label>Bus/Train ₹</label>
+                      <input className="card-input num" type="number" inputMode="decimal"
+                        value={r.bus || ''} placeholder="0"
+                        onChange={e => onChange(i, 'bus', e.target.value)} />
+                    </div>
+                    <div className="card-field">
+                      <label>Bike Amt</label>
+                      <div className="card-computed">₹{r.bikeAmt}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Allowance summary */}
+                <div className="card-amounts">
+                  {r.type === 'HQ' && (
+                    <span className="amt-tag hq">TA ₹{r.hqTa} · DA ₹{r.hqDa}</span>
+                  )}
+                  {r.type === 'Upcountry' && (
+                    <span className="amt-tag up">UP DA ₹{r.upDa}</span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Desktop Table ────────────────────────────────────────────────────────────
+function DesktopTable({ rows, hq, totals, onChange, onCopy, onQuickTown }) {
+  const [townPopup, setTownPopup] = React.useState(null);
+  const popupRef = React.useRef(null);
+
+  // Close town popup when clicking outside
+  React.useEffect(() => {
+    if (townPopup === null) return;
+    const handler = (e) => {
+      if (popupRef.current && !popupRef.current.contains(e.target)) {
+        setTownPopup(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [townPopup]);
+
+
+  return (
+    <div className="excel-view-container">
+      <table className="excel-mock-table">
+        <thead>
+          <tr className="excel-section-header">
+            <th colSpan={5}></th>
+            <th colSpan={2}>HQ Local</th>
+            <th colSpan={2}>Upcountry</th>
+            <th colSpan={4}>KM / Bike</th>
+            <th colSpan={2}>Other</th>
+            <th></th>
+            <th></th>
+          </tr>
+          <tr className="excel-column-header">
+            {['#','Date','Day','Town','Type','HQ TA','HQ DA','UP TA','UP DA',
+              'KM','Rate','Bike','Hotel','Bus','Total',''].map((h,i) => (
+              <th key={i}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const isSun = r.type === 'Sunday';
+            const isOff = r.type === 'Leave' || r.type === 'Holiday';
+            return (
+              <tr key={r.dayNum} className={isSun ? 'row-sunday' : isOff ? 'row-leave' : r.type === 'HQ' ? 'row-hq' : r.type === 'Upcountry' ? 'row-upcountry' : 'row-normal'}>
+                <td>{r.dayNum}</td>
+                <td className="td-date">{r.dateStr}</td>
+                <td>{r.dayName}</td>
+                <td className="td-town">
+                  {!isSun && !isOff && <>
+                    <input className="cell-input" type="text" value={r.town}
+                      onFocus={() => setTownPopup(i)}
+                      onClick={() => setTownPopup(i)}
+                      onChange={e => onChange(i, 'town', e.target.value)} />
+                    {townPopup === i && (
+                      <div className="town-popup" ref={popupRef}>
+                        {QUICK_TOWNS.map(t => (
+                          <button key={t} className="badge-btn sm"
+                            onMouseDown={(e) => { e.preventDefault(); onQuickTown(i, t); setTownPopup(null); }}>{t}</button>
+                        ))}
+                      </div>
+                    )}
+                  </>}
+                </td>
+                <td>
+                  {!isSun && (
+                    <select className="cell-select" value={r.type}
+                      onChange={e => onChange(i, 'type', e.target.value)}>
+                      <option value="HQ">HQ</option>
+                      <option value="Upcountry">Upcountry</option>
+                      <option value="Leave">Leave</option>
+                      <option value="Holiday">Holiday</option>
+                    </select>
+                  )}
+                </td>
+                <td className="readonly-cell">{isSun?'':r.hqTa}</td>
+                <td className="readonly-cell">{isSun?'':r.hqDa}</td>
+                <td className="readonly-cell">{isSun?'':r.upTa}</td>
+                <td className="readonly-cell">{isSun?'':r.upDa}</td>
+                <td>
+                  {!isSun && !isOff && (
+                    <input className="cell-input num" type="number" inputMode="decimal"
+                      value={r.km||''} placeholder="0"
+                      onChange={e => onChange(i, 'km', e.target.value)} />
+                  )}
+                </td>
+                <td className="readonly-cell">{r.rate}</td>
+                <td className="formula-cell">{r.bikeAmt}</td>
+                <td>
+                  {!isSun && !isOff && (
+                    <input className="cell-input num" type="number" inputMode="decimal"
+                      value={r.hotel||''} placeholder="0"
+                      onChange={e => onChange(i, 'hotel', e.target.value)} />
+                  )}
+                </td>
+                <td>
+                  {!isSun && !isOff && (
+                    <input className="cell-input num" type="number" inputMode="decimal"
+                      value={r.bus||''} placeholder="0"
+                      onChange={e => onChange(i, 'bus', e.target.value)} />
+                  )}
+                </td>
+                <td className="td-total">{r.total}</td>
+                <td className="td-action">
+                  {!isSun && i > 0 && (
+                    <button className="copy-btn-sm" onClick={() => onCopy(i)}
+                      title="Copy from yesterday">⬆</button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+
+          {/* empty spacer rows */}
+          <tr><td colSpan={16} style={{height:'8px',background:'transparent'}}></td></tr>
+          <tr><td colSpan={16} style={{height:'8px',background:'transparent'}}></td></tr>
+
+          {/* Totals */}
+          <tr className="row-total-bottom">
+            <td colSpan={5} style={{textAlign:'right',paddingRight:'1rem'}}>TOTAL</td>
+            <td>{totals.hqTa}</td><td>{totals.hqDa}</td>
+            <td>{totals.upTa}</td><td>{totals.upDa}</td>
+            <td>{totals.km}</td><td></td>
+            <td>{totals.bikeAmt}</td>
+            <td>{totals.hotel}</td><td>{totals.bus}</td>
+            <td>{totals.total}</td><td></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
