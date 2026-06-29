@@ -411,6 +411,11 @@ input, select, button, textarea { font-family: inherit; }
 .amt-tag.up { background: rgba(139,92,246,0.12); color: var(--purple); border: 1px solid rgba(139,92,246,0.25); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
 
+.card-computed.total-computed {
+  background: rgba(16,185,129,0.1); color: var(--teal);
+  border-color: rgba(16,185,129,0.3); font-weight: 700; font-style: normal;
+}
+
 /* ── TOAST ───────────────────────────────────────────────────────────────────── */
 .toast-msg {
   position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
@@ -442,14 +447,45 @@ input, select, button, textarea { font-family: inherit; }
   }
 
   /* preview card — no forced min-height, just tighter padding */
-  .preview-card { padding: 0.65rem; }
+  .preview-card {
+    padding: 0.65rem;
+    overflow: visible;
+  }
   .preview-header h2 { font-size: 1rem; }
 
   /* mobile card list — scroll inside the card, leave room for header */
   .mobile-cards {
-    max-height: calc(100dvh - 170px);
-    overflow-y: auto;
+    max-height: none;
+    overflow-y: visible;
     padding-bottom: 3rem;
+  }
+
+  /* Make day cards show full content with proper min-height */
+  .day-card {
+    min-height: auto;
+    height: auto;
+  }
+
+  /* Card body: ensure proper padding and stacking */
+  .card-body {
+    padding: 0.65rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  /* Card inputs must have explicit height on mobile */
+  .card-input {
+    height: 44px;
+    min-height: 44px;
+    font-size: 1rem;
+    padding: 0.55rem 0.7rem;
+  }
+
+  /* Fields grid: single column on mobile for readability */
+  .card-fields-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
   }
 
   /* ── Settings panel becomes a full-screen modal on mobile ── */

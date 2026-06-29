@@ -21,7 +21,7 @@ const rowsKey     = (y, m) => `psm_rows_${y}_${m}`;
 
 // ─── Pure helpers (no hooks) ──────────────────────────────────────────────────
 function recalc(row, rate) {
-  const r = rate ?? row.rate ?? 4;
+  const r = (row.rate != null && row.rate !== '') ? row.rate : (rate ?? 4);
   const bikeAmt = (row.km || 0) * r;
   const total   = (row.hqTa||0)+(row.hqDa||0)+(row.upTa||0)+(row.upDa||0)+bikeAmt+(row.hotel||0)+(row.bus||0);
   return { ...row, rate: r, bikeAmt, total };
@@ -84,7 +84,7 @@ export default function App() {
   const [joiningDate, setJoiningDate] = useState(() => loadSettings().joiningDate || '25-04-2024');
   const [hq,          setHq]          = useState(() => loadSettings().hq          || 'Gwalior');
   const [mobileNo,    setMobileNo]    = useState(() => loadSettings().mobileNo    || '9074305446');
-  const [aseName,     setAseName]     = useState(() => loadSettings().aseName     || '');
+  const [aseName,     setAseName]     = useState(() => loadSettings().aseName     || 'Sandeep Dwivedi');
   const [ratePerKm,   setRatePerKm]   = useState(() => loadSettings().ratePerKm   || 4);
   const [month,       setMonth]       = useState(() => loadSettings().month       || new Date().getMonth() + 1);
   const [year,        setYear]        = useState(() => loadSettings().year        || new Date().getFullYear());
@@ -159,6 +159,7 @@ export default function App() {
       let row = { ...next[index] };
       if (field === 'type')   row = applyType(row, value, hq);
       else if (field === 'town') row = applyTownAndAutoType(row, value, hq);
+      else if (field === 'rate') { row.rate = value === '' ? 0 : parseFloat(value) || 0; }
       else { const n = parseFloat(value); row[field] = isNaN(n) ? 0 : n; }
       next[index] = recalc(row, ratePerKm);
       return next;
@@ -663,10 +664,40 @@ function MobileCards({ rows, hq, onChange, onCopy, onQuickTown }) {
                 {!isOff && (
                   <div className="card-fields-grid">
                     <div className="card-field">
+                      <label>HQ TA ₹</label>
+                      <input className="card-input num" type="number" inputMode="decimal"
+                        value={r.hqTa || ''} placeholder="0"
+                        onChange={e => onChange(i, 'hqTa', e.target.value)} />
+                    </div>
+                    <div className="card-field">
+                      <label>HQ DA ₹</label>
+                      <input className="card-input num" type="number" inputMode="decimal"
+                        value={r.hqDa || ''} placeholder="0"
+                        onChange={e => onChange(i, 'hqDa', e.target.value)} />
+                    </div>
+                    <div className="card-field">
+                      <label>UP TA ₹</label>
+                      <input className="card-input num" type="number" inputMode="decimal"
+                        value={r.upTa || ''} placeholder="0"
+                        onChange={e => onChange(i, 'upTa', e.target.value)} />
+                    </div>
+                    <div className="card-field">
+                      <label>UP DA ₹</label>
+                      <input className="card-input num" type="number" inputMode="decimal"
+                        value={r.upDa || ''} placeholder="0"
+                        onChange={e => onChange(i, 'upDa', e.target.value)} />
+                    </div>
+                    <div className="card-field">
                       <label>KM</label>
                       <input className="card-input num" type="number" inputMode="decimal"
                         value={r.km || ''} placeholder="0"
                         onChange={e => onChange(i, 'km', e.target.value)} />
+                    </div>
+                    <div className="card-field">
+                      <label>Rate ₹/KM</label>
+                      <input className="card-input num" type="number" inputMode="decimal"
+                        value={r.rate || ''} placeholder="4"
+                        onChange={e => onChange(i, 'rate', e.target.value)} />
                     </div>
                     <div className="card-field">
                       <label>Hotel ₹</label>
@@ -683,6 +714,10 @@ function MobileCards({ rows, hq, onChange, onCopy, onQuickTown }) {
                     <div className="card-field">
                       <label>Bike Amt</label>
                       <div className="card-computed">₹{r.bikeAmt}</div>
+                    </div>
+                    <div className="card-field">
+                      <label>Total</label>
+                      <div className="card-computed total-computed">₹{r.total}</div>
                     </div>
                   </div>
                 )}
@@ -779,10 +814,34 @@ function DesktopTable({ rows, hq, totals, onChange, onCopy, onQuickTown }) {
                     </select>
                   )}
                 </td>
-                <td className="readonly-cell">{isSun?'':r.hqTa}</td>
-                <td className="readonly-cell">{isSun?'':r.hqDa}</td>
-                <td className="readonly-cell">{isSun?'':r.upTa}</td>
-                <td className="readonly-cell">{isSun?'':r.upDa}</td>
+                <td>
+                  {!isSun && (
+                    <input className="cell-input num" type="number" inputMode="decimal"
+                      value={r.hqTa||''} placeholder="0"
+                      onChange={e => onChange(i, 'hqTa', e.target.value)} />
+                  )}
+                </td>
+                <td>
+                  {!isSun && (
+                    <input className="cell-input num" type="number" inputMode="decimal"
+                      value={r.hqDa||''} placeholder="0"
+                      onChange={e => onChange(i, 'hqDa', e.target.value)} />
+                  )}
+                </td>
+                <td>
+                  {!isSun && (
+                    <input className="cell-input num" type="number" inputMode="decimal"
+                      value={r.upTa||''} placeholder="0"
+                      onChange={e => onChange(i, 'upTa', e.target.value)} />
+                  )}
+                </td>
+                <td>
+                  {!isSun && (
+                    <input className="cell-input num" type="number" inputMode="decimal"
+                      value={r.upDa||''} placeholder="0"
+                      onChange={e => onChange(i, 'upDa', e.target.value)} />
+                  )}
+                </td>
                 <td>
                   {!isSun && !isOff && (
                     <input className="cell-input num" type="number" inputMode="decimal"
@@ -790,7 +849,13 @@ function DesktopTable({ rows, hq, totals, onChange, onCopy, onQuickTown }) {
                       onChange={e => onChange(i, 'km', e.target.value)} />
                   )}
                 </td>
-                <td className="readonly-cell">{r.rate}</td>
+                <td>
+                  {!isSun && (
+                    <input className="cell-input num" type="number" inputMode="decimal"
+                      value={r.rate||''} placeholder="4"
+                      onChange={e => onChange(i, 'rate', e.target.value)} />
+                  )}
+                </td>
                 <td className="formula-cell">{r.bikeAmt}</td>
                 <td>
                   {!isSun && !isOff && (
